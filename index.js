@@ -80,25 +80,27 @@ async function newAuthedPage(browser) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 2. ฟังก์ชันกด "ดูเพิ่มเติม" และ "ดูความคิดเห็นเพิ่มเติม"
+a// ปรับปรุงฟังก์ชันขยายเนื้อหาให้มีขีดจำกัด
 async function autoExpand(page) {
-  const targetLabels = [
-    "ดูเพิ่มเติม", "See more", 
-    "ดูความคิดเห็นเพิ่มเติม", "View more comments", 
-    "ความคิดเห็นเพิ่มเติม", "More comments",
-    "แสดงความคิดเห็น..."
-  ];
+  const targetLabels = ["ดูเพิ่มเติม", "See more", "ดูความคิดเห็นเพิ่มเติม", "View more comments"];
+  let clickCount = 0;
+  const MAX_CLICKS = 5; // กดสูงสุดแค่ 5 ครั้งต่อรอบพอ เพื่อป้องกันการค้าง
 
   try {
-    // หาปุ่มที่มีข้อความตามที่กำหนด
     const buttons = await page.$$("div[role='button'], span[role='button']");
     for (const btn of buttons) {
-      const text = await page.evaluate(el => el.innerText, btn);
-      if (targetLabels.some(label => text && text.includes(label))) {
-        await btn.click();
-        await sleep(1000); 
+      if (clickCount >= MAX_CLICKS) break; 
+
+      const text = await page.evaluate(el => el.innerText, btn).catch(() => null);
+      if (text && targetLabels.some(label => text.includes(label))) {
+        await btn.click().catch(() => null);
+        clickCount++;
+        await sleep(800); 
       }
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    log("⚠️ Expand Error (Skipped):", e.message);
+  }
 }
 
 async function scrapeGroup(page, groupUrl) {

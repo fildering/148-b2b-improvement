@@ -1,0 +1,17 @@
+{
+  "name": "fb-group-scraper",
+  "version": "1.0.0",
+  "description": "Facebook Group Scraper to Google Sheets",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "googleapis": "^126.0.0",
+    "node-cron": "^3.0.3",
+    "puppeteer": "^22.0.0"
+  }
+}

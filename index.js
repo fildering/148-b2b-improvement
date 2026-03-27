@@ -12,22 +12,21 @@ const SHEET_NAME = process.env.SHEET_NAME || "Raw";
 const RAW_GROUP_URLS = process.env.GROUP_URLS || "";
 const GROUP_URLS = RAW_GROUP_URLS.split(",").map((s) => s.trim()).filter(Boolean);
 const COOKIES_JSON = process.env.COOKIES_JSON || process.env.FB_COOKIE_JSON || "";
-const MAX_POSTS_PER_GROUP = Number(process.env.MAX_POSTS_PER_GROUP || 10);
-const SCROLL_LOOPS = Number(process.env.SCROLL_LOOPS || 2); 
-const SCROLL_PAUSE_MS = Number(process.env.SCROLL_PAUSE_MS || 1500);
+const MAX_POSTS_PER_GROUP = Number(process.env.MAX_POSTS_PER_GROUP || 5); // ปรับลดเพื่อความเร็ว
+const SCROLL_LOOPS = Number(process.env.SCROLL_LOOPS || 1); 
+const SCROLL_PAUSE_MS = Number(process.env.SCROLL_PAUSE_MS || 2000);
 
-function log(...args) { console.log(...args); }
+function log(...args) { console.log(`[${new Date().toLocaleTimeString()}]`, ...args); }
 
 // -------------------- Google Sheets --------------------
 async function getSheetsClient() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_CREDENTIALS;
   if (!raw) throw new Error("GOOGLE_CREDENTIALS not set");
   const key = JSON.parse(raw);
-  const auth = new google.auth.GoogleAuth({
+  return google.sheets({ version: "v4", auth: new google.auth.GoogleAuth({
     credentials: key,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-  return google.sheets({ version: "v4", auth });
+  })});
 }
 
 async function appendRowsToSheet(rows) {
@@ -55,18 +54,8 @@ async function launchBrowser() {
 
 async function newAuthedPage(browser) {
   const page = await browser.newPage();
-  
-  // 1. ขยายหน้าจอเป็น 9:16 แบบมือถือ
-  await page.setViewport({
-    width: 450,
-    height: 800,
-    isMobile: true,
-    hasTouch: true
-  });
-
-  await page.setUserAgent(
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-  );
+  await page.setViewport({ width: 450, height: 800, isMobile: true, hasTouch: true });
+  await page.setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1");
 
   if (COOKIES_JSON) {
     try {
@@ -79,83 +68,70 @@ async function newAuthedPage(browser) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 2. ฟังก์ชันกด "ดูเพิ่มเติม" และ "ดูความคิดเห็นเพิ่มเติม"
-a// ปรับปรุงฟังก์ชันขยายเนื้อหาให้มีขีดจำกัด
+// *** ฟังก์ชันขยายเนื้อหาแบบ "กันค้าง" ***
 async function autoExpand(page) {
-  const targetLabels = ["ดูเพิ่มเติม", "See more", "ดูความคิดเห็นเพิ่มเติม", "View more comments"];
-  let clickCount = 0;
-  const MAX_CLICKS = 5; // กดสูงสุดแค่ 5 ครั้งต่อรอบพอ เพื่อป้องกันการค้าง
-
+  const labels = ["ดูเพิ่มเติม", "See more", "ดูความคิดเห็นเพิ่มเติม", "View more comments", "ความคิดเห็นเพิ่มเติม"];
   try {
-    const buttons = await page.$$("div[role='button'], span[role='button']");
+    const buttons = await page.$$("div[role='button'], span[role='button'], a[role='button']");
+    let pressed = 0;
     for (const btn of buttons) {
-      if (clickCount >= MAX_CLICKS) break; 
-
-      const text = await page.evaluate(el => el.innerText, btn).catch(() => null);
-      if (text && targetLabels.some(label => text.includes(label))) {
-        await btn.click().catch(() => null);
-        clickCount++;
-        await sleep(800); 
+      if (pressed >= 5) break; // กดสูงสุด 5 ปุ่มต่อรอบพอ กันค้าง
+      const text = await page.evaluate(el => el.innerText, btn).catch(() => "");
+      if (text && labels.some(l => text.includes(l))) {
+        await btn.click().catch(() => {});
+        pressed++;
+        await sleep(800);
       }
     }
-  } catch (e) {
-    log("⚠️ Expand Error (Skipped):", e.message);
-  }
+  } catch (e) { log("⚠️ Expand skipped"); }
 }
 
 async function scrapeGroup(page, groupUrl) {
   log("Scraping:", groupUrl);
-  await page.goto(groupUrl, { waitUntil: "networkidle2", timeout: 60000 });
-  
-  // เลื่อนหน้าจอและกดขยายเนื้อหา
-  for (let i = 0; i < SCROLL_LOOPS; i++) {
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await sleep(SCROLL_PAUSE_MS);
-    await autoExpand(page); 
-  }
+  try {
+    await page.goto(groupUrl, { waitUntil: "networkidle2", timeout: 45000 });
+    
+    for (let i = 0; i < SCROLL_LOOPS; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await sleep(SCROLL_PAUSE_MS);
+      await autoExpand(page); 
+    }
 
-  const posts = await page.$$eval("div[role='article']", (articles) => {
-    return articles.map(a => {
-      const anchors = Array.from(a.querySelectorAll("a")).map(x => x.href);
-      const permalink = anchors.find(h => h.includes("/posts/") || h.includes("/permalink/")) || "";
-      
-      // ดึง Text และทำความสะอาดเบื้องต้น
-      let rawText = (a.innerText || "").trim();
-      
-      // 3. ตัดข้อความส่วนเกินออก
-      const junk = [
-        "ถูกใจ", "แสดงความคิดเห็น", "ส่ง", "แชร์", "ตอบกลับ", 
-        "Like", "Comment", "Share", "Reply", "เขียนความคิดเห็น..."
-      ];
-      let cleaned = rawText;
-      junk.forEach(word => {
-        const regex = new RegExp(`\\n?${word}\\b`, 'g');
-        cleaned = cleaned.replace(regex, "");
+    const posts = await page.$$eval("div[role='article']", (articles) => {
+      return articles.map(a => {
+        const anchors = Array.from(a.querySelectorAll("a")).map(x => x.href);
+        const permalink = anchors.find(h => h.includes("/posts/") || h.includes("/permalink/")) || "";
+        let text = (a.innerText || "").trim();
+        
+        // ตัดขยะ
+        const junk = ["ถูกใจ", "แสดงความคิดเห็น", "ส่ง", "แชร์", "ตอบกลับ", "เขียนความคิดเห็น..."];
+        junk.forEach(word => { text = text.replace(new RegExp(`\\n?${word}\\b`, 'g'), ""); });
+
+        return { permalink, text: text.trim(), author: a.querySelector("h3, strong")?.innerText || "Unknown" };
       });
-
-      return {
-        permalink,
-        text: cleaned.trim(),
-        author: a.querySelector("h3 a, strong a")?.innerText || "Unknown"
-      };
     });
-  });
 
-  const unique = posts.filter(p => p.permalink && p.text).slice(0, MAX_POSTS_PER_GROUP);
-  return { status: unique.length ? "ok" : "no_posts", rows: unique };
+    const unique = posts.filter(p => p.permalink && p.text).slice(0, MAX_POSTS_PER_GROUP);
+    return { status: unique.length ? "ok" : "no_posts", rows: unique };
+  } catch (e) {
+    log(`❌ Scrape Error (${groupUrl}):`, e.message);
+    return { status: "error", rows: [] };
+  }
 }
 
-// -------------------- Job & Server --------------------
+// -------------------- Job --------------------
 async function runJob() {
-  log("Job start:", new Date().toLocaleString("th-TH", { timeZone: TZ }));
+  log(">>> Job Start");
   let browser;
   try {
     browser = await launchBrowser();
     const page = await newAuthedPage(browser);
+    await page.goto("https://www.facebook.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
     
-    // เช็ค Login
-    await page.goto("https://www.facebook.com/", { waitUntil: "domcontentloaded" });
-    if (page.url().includes("/login")) throw new Error("Session Expired");
+    if (page.url().includes("/login")) {
+      log("❌ Session Expired! Update COOKIES_JSON");
+      return;
+    }
 
     const allRows = [];
     const now = new Date().toISOString();
@@ -166,15 +142,17 @@ async function runJob() {
         res.rows.forEach(p => allRows.push([now, url, p.permalink, p.author, "", p.text]));
       }
     }
-    await appendRowsToSheet(allRows);
-  } catch (e) { log("❌ Job Error:", e.message); }
+    if (allRows.length) await appendRowsToSheet(allRows);
+    log(">>> Job Done");
+  } catch (e) { log("❌ Global Error:", e.message); }
   finally { if (browser) await browser.close(); }
 }
 
+// -------------------- Server --------------------
 const app = express();
-app.get("/", (req, res) => res.send("Bot is Running"));
+app.get("/", (req, res) => res.send("Bot Active"));
 app.listen(process.env.PORT || 8080, () => {
-  log("Server started");
+  log("Health Server Start");
   cron.schedule(CRON_SCHEDULE, runJob, { timezone: TZ });
   if (RUN_ON_START) runJob();
 });

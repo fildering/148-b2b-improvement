@@ -5,7 +5,7 @@ Orchestrator Agent — ประสานงานระหว่าง agents �
 
 import json
 import os
-import anthropic
+from google import genai
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -17,7 +17,7 @@ from agents.comparison_agent import ComparisonAgent
 from agents.coach_agent import CoachAgent
 
 console = Console()
-MODEL = "claude-opus-4-7"
+MODEL = "gemini-2.0-flash"
 
 
 class Orchestrator:
@@ -27,7 +27,7 @@ class Orchestrator:
     """
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         self.data_agent = DataAgent()
         self.analysis_agent = AnalysisAgent()
         self.comparison_agent = ComparisonAgent()
@@ -158,33 +158,29 @@ class Orchestrator:
 
     def _extract_stats_from_analysis(self, analysis_text: str) -> dict:
         """
-        ใช้ Claude แปลง analysis text เป็น structured stats dict
+        ใช้ Gemini แปลง analysis text เป็น structured stats dict
         """
-        response = self.client.messages.create(
+        from google.genai import types
+
+        response = self.client.models.generate_content(
             model=MODEL,
-            max_tokens=512,
-            system="แปลงข้อความวิเคราะห์ CS2 เป็น JSON stats. ตอบด้วย JSON เท่านั้น",
-            messages=[{
-                "role": "user",
-                "content": f"""
-จากข้อความวิเคราะห์นี้ ดึงตัวเลขออกมาเป็น JSON:
+            contents=f"""
+จากข้อความวิเคราะห์ CS2 นี้ ดึงตัวเลขออกมาเป็น JSON:
 {analysis_text}
 
 ต้องการ keys: kd_ratio, headshots_pct, win_rate, avg_kills, adr
 ถ้าไม่มีข้อมูลให้ใช้ค่า default ที่สมเหตุสมผล
-ตอบแค่ JSON เท่านั้น ไม่มีคำอธิบาย
-"""
-            }],
+ตอบแค่ JSON เท่านั้น ไม่มีคำอธิบาย ไม่มี markdown code block
+""",
+            config=types.GenerateContentConfig(
+                system_instruction="แปลงข้อความวิเคราะห์ CS2 เป็น JSON stats ตอบด้วย JSON เท่านั้น ไม่มี markdown",
+            ),
         )
 
-        text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                text += block.text
+        text = response.text.strip() if response.text else ""
 
-        # Clean up JSON
-        text = text.strip()
-        if text.startswith("```"):
+        # Clean up JSON ถ้ามี markdown code block หลุดมา
+        if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]

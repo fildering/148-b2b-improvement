@@ -42,8 +42,8 @@ if not exist ".env" (
     echo.
     echo ===== ต้องใส่ API Keys ก่อนใช้งาน =====
     echo เปิดไฟล์ .env แล้วแก้ไข:
-    echo   ANTHROPIC_API_KEY=your_key_here
-    echo   FACEIT_API_KEY=your_key_here
+    echo   GEMINI_API_KEY=your_key_here   (ฟรี! จาก aistudio.google.com)
+    echo   FACEIT_API_KEY=your_key_here   (ฟรี! จาก developers.faceit.com)
     echo =========================================
     notepad .env
 ) else (

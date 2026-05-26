@@ -39,20 +39,22 @@ Script จะ:
 
 ## ขั้นตอนที่ 4 — ตั้งค่า API Keys
 
-### 🔑 Anthropic API Key (จำเป็น)
+### 🔑 Google Gemini API Key (จำเป็น — ฟรี!)
 
-1. ไปที่ [console.anthropic.com](https://console.anthropic.com/)
-2. สมัครหรือ Login
-3. คลิก **"API Keys"** ในเมนูซ้าย
-4. คลิก **"Create Key"** → ตั้งชื่อ เช่น `cs2-analyst`
-5. Copy key (ขึ้นต้นด้วย `sk-ant-...`)
+1. ไปที่ **[aistudio.google.com](https://aistudio.google.com/)**
+2. Login ด้วย Google account
+3. คลิก **"Get API key"** (มุมบนขวา)
+4. คลิก **"Create API key"** → เลือก Project (หรือสร้างใหม่)
+5. Copy key (ขึ้นต้นด้วย `AIza...`)
 6. ใส่ใน `.env`:
    ```
-   ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxx
+   GEMINI_API_KEY=AIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
    ```
 
-> 💰 ค่าใช้จ่าย: ~$0.003 ต่อการวิเคราะห์ 1 ครั้ง (ถูกมาก)
-> Claude Opus ใช้ประมาณ $0.015/1K input tokens + $0.075/1K output tokens
+> ✅ **ฟรีทั้งหมด!** Free tier ของ Gemini 2.0 Flash:
+> - 1,500 requests/วัน
+> - 1 ล้าน tokens/วัน
+> - ไม่ต้องใส่บัตรเครดิต
 
 ---
 

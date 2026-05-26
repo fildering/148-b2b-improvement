@@ -1,15 +1,15 @@
 """
 Base Agent — โครงสร้างพื้นฐานของทุก agent
-ใช้ Claude API พร้อม tool use
+ใช้ Google Gemini API (ฟรี!) แทน Anthropic
 """
 
 import json
 import os
 from typing import Any
-import anthropic
+from google import genai
+from google.genai import types
 
-MODEL = "claude-opus-4-7"
-MAX_TOKENS = 4096
+MODEL = "gemini-2.0-flash"
 
 
 class BaseAgent:
@@ -17,77 +17,116 @@ class BaseAgent:
         self.name = name
         self.system_prompt = system_prompt
         self.tools = tools
-        self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        self.message_history: list[dict] = []
+        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        self.conversation: list = []
 
     def run(self, user_message: str, tool_executor: "ToolExecutor | None" = None) -> str:
         """
         รัน agent ด้วย agentic loop
-        วนซ้ำจนกว่า Claude จะหยุดเรียก tools
+        วนซ้ำจนกว่า Gemini จะหยุดเรียก tools
         """
-        self.message_history.append({"role": "user", "content": user_message})
+        self.conversation.append(
+            types.Content(role="user", parts=[types.Part(text=user_message)])
+        )
+
+        # แปลง tool schema จาก Anthropic format → Gemini format
+        gemini_tools = self._convert_tools()
+
+        config = types.GenerateContentConfig(
+            system_instruction=self.system_prompt,
+            tools=gemini_tools,
+        )
 
         while True:
-            response = self.client.messages.create(
+            response = self.client.models.generate_content(
                 model=MODEL,
-                max_tokens=MAX_TOKENS,
-                system=self.system_prompt,
-                tools=self.tools if self.tools else [],
-                messages=self.message_history,
+                contents=self.conversation,
+                config=config,
             )
 
-            # เก็บ response ลง history
-            self.message_history.append({
-                "role": "assistant",
-                "content": response.content,
-            })
+            candidate = response.candidates[0]
+            content = candidate.content
+            self.conversation.append(content)
 
-            # ถ้าหยุดแล้ว (end_turn หรือ max_tokens) ให้ส่งผลลัพธ์
-            if response.stop_reason == "end_turn":
-                return self._extract_text(response.content)
+            # หา function calls
+            function_calls = [
+                p for p in content.parts
+                if p.function_call is not None
+            ]
 
-            # ถ้ายังมี tool calls ให้รัน
-            if response.stop_reason == "tool_use":
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        result = self._execute_tool(block, tool_executor)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(result, ensure_ascii=False),
-                        })
+            # ไม่มี function calls → จบแล้ว ส่งข้อความกลับ
+            if not function_calls:
+                text_parts = [
+                    p.text for p in content.parts
+                    if hasattr(p, "text") and p.text
+                ]
+                return "\n".join(text_parts)
 
-                self.message_history.append({
-                    "role": "user",
-                    "content": tool_results,
-                })
-            else:
-                # stop_reason อื่นๆ
-                return self._extract_text(response.content)
+            # รัน function calls แล้วส่งผลกลับ
+            function_responses = []
+            for part in function_calls:
+                fc = part.function_call
+                result = {}
+                if tool_executor:
+                    result = tool_executor.execute(fc.name, dict(fc.args))
 
-    def _execute_tool(self, tool_use_block, tool_executor) -> Any:
-        """รัน tool จาก block ที่ Claude ขอ"""
-        tool_name = tool_use_block.name
-        tool_input = tool_use_block.input
+                function_responses.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"result": json.dumps(result, ensure_ascii=False)},
+                        )
+                    )
+                )
 
-        if tool_executor:
-            return tool_executor.execute(tool_name, tool_input)
-
-        return {"error": f"ไม่มี executor สำหรับ tool: {tool_name}"}
+            # เพิ่ม function results ลง conversation
+            self.conversation.append(
+                types.Content(role="user", parts=function_responses)
+            )
 
     def reset(self):
         """เคลียร์ประวัติ conversation"""
-        self.message_history = []
+        self.conversation = []
 
-    @staticmethod
-    def _extract_text(content: list) -> str:
-        """ดึง text จาก response content"""
-        parts = []
-        for block in content:
-            if hasattr(block, "text"):
-                parts.append(block.text)
-        return "\n".join(parts)
+    def _convert_tools(self) -> list | None:
+        """
+        แปลง Anthropic tool format → Gemini FunctionDeclaration format
+        Anthropic: input_schema → Gemini: parameters
+        """
+        if not self.tools:
+            return None
+
+        declarations = []
+        for tool in self.tools:
+            schema = tool.get("input_schema", {})
+            params = {
+                "type": schema.get("type", "object"),
+                "properties": {},
+            }
+
+            # แปลง properties
+            for prop_name, prop_def in schema.get("properties", {}).items():
+                converted = {"type": prop_def.get("type", "string")}
+                if "description" in prop_def:
+                    converted["description"] = prop_def["description"]
+                if "enum" in prop_def:
+                    converted["enum"] = prop_def["enum"]
+                if "default" in prop_def:
+                    converted["default"] = prop_def["default"]
+                params["properties"][prop_name] = converted
+
+            if "required" in schema:
+                params["required"] = schema["required"]
+
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=tool["name"],
+                    description=tool.get("description", ""),
+                    parameters=params,
+                )
+            )
+
+        return [types.Tool(function_declarations=declarations)]
 
 
 class ToolExecutor:

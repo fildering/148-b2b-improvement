@@ -24,9 +24,10 @@ console = Console()
 
 def check_env():
     """ตรวจสอบ environment variables ที่จำเป็น"""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        console.print("[bold red]❌ ต้องตั้งค่า ANTHROPIC_API_KEY[/bold red]")
-        console.print("[dim]สร้างไฟล์ .env แล้วใส่: ANTHROPIC_API_KEY=your_key_here[/dim]")
+    if not os.environ.get("GEMINI_API_KEY"):
+        console.print("[bold red]❌ ต้องตั้งค่า GEMINI_API_KEY[/bold red]")
+        console.print("[dim]สมัครฟรีที่ https://aistudio.google.com/ → 'Get API key'[/dim]")
+        console.print("[dim]แล้วใส่ใน .env: GEMINI_API_KEY=your_key_here[/dim]")
         sys.exit(1)
 
     if not os.environ.get("FACEIT_API_KEY"):

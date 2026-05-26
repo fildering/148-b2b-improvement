@@ -1,6 +1,9 @@
 """
 Orchestrator Agent — ประสานงานระหว่าง agents ทั้งหมด
 รับ input จากผู้ใช้ แจกงาน และรวมผลลัพธ์
+
+การปรับปรุง: เพิ่ม WebScoutAgent เพื่อดึง pro player stats แบบ live
+Fallback chain: WebScoutAgent → FACEIT API → KNOWN_PROS hardcoded
 """
 
 import json
@@ -16,38 +19,63 @@ from agents.data_agent import DataAgent
 from agents.analysis_agent import AnalysisAgent
 from agents.comparison_agent import ComparisonAgent
 from agents.coach_agent import CoachAgent
+from agents.web_scout_agent import WebScoutAgent, quick_scout
 from tools import faceit_tools
 
 console = Console()
 MODEL = "llama-3.1-8b-instant"   # 500k tokens/day vs 70b's 100k
 
-# ── Pro player stats แบบ hardcoded (fallback ถ้าไม่มี FACEIT key) ──
+# ── Pro player stats แบบ hardcoded (fallback สุดท้ายถ้าทุก source ล้มเหลว) ──
 # ข้อมูลจาก HLTV lifetime stats ปี 2024
+# NOTE: ค่าเหล่านี้ใช้เป็น fallback เท่านั้น — ระบบจะพยายามดึงข้อมูล live ก่อนเสมอ
 KNOWN_PROS: dict[str, dict] = {
     "s1mple": {
         "kd_ratio": 1.37, "headshots_pct": 47.0,
         "win_rate": 58.0, "avg_kills": 23.5, "adr": 84.0,
-        "source": "HLTV 2024",
+        "rating": 1.28, "kast_pct": 73.5,
+        "source": "HLTV 2024 (hardcoded fallback)",
     },
     "zywoo": {
         "kd_ratio": 1.34, "headshots_pct": 44.0,
         "win_rate": 57.0, "avg_kills": 22.8, "adr": 82.0,
-        "source": "HLTV 2024",
+        "rating": 1.32, "kast_pct": 74.2,
+        "source": "HLTV 2024 (hardcoded fallback)",
     },
     "niko": {
         "kd_ratio": 1.24, "headshots_pct": 52.0,
         "win_rate": 56.0, "avg_kills": 22.0, "adr": 80.0,
-        "source": "HLTV 2024",
+        "rating": 1.21, "kast_pct": 72.0,
+        "source": "HLTV 2024 (hardcoded fallback)",
     },
     "device": {
         "kd_ratio": 1.19, "headshots_pct": 36.0,
         "win_rate": 59.0, "avg_kills": 20.5, "adr": 76.0,
-        "source": "HLTV 2024",
+        "rating": 1.16, "kast_pct": 76.8,
+        "source": "HLTV 2024 (hardcoded fallback)",
     },
     "electronic": {
         "kd_ratio": 1.16, "headshots_pct": 50.0,
         "win_rate": 57.0, "avg_kills": 21.0, "adr": 78.0,
-        "source": "HLTV 2024",
+        "rating": 1.14, "kast_pct": 71.5,
+        "source": "HLTV 2024 (hardcoded fallback)",
+    },
+    "donk": {
+        "kd_ratio": 1.42, "headshots_pct": 45.0,
+        "win_rate": 62.0, "avg_kills": 24.1, "adr": 88.0,
+        "rating": 1.45, "kast_pct": 75.0,
+        "source": "HLTV 2024 (hardcoded fallback)",
+    },
+    "ropz": {
+        "kd_ratio": 1.22, "headshots_pct": 43.0,
+        "win_rate": 58.0, "avg_kills": 21.5, "adr": 79.0,
+        "rating": 1.19, "kast_pct": 74.5,
+        "source": "HLTV 2024 (hardcoded fallback)",
+    },
+    "m0nesy": {
+        "kd_ratio": 1.28, "headshots_pct": 49.0,
+        "win_rate": 57.0, "avg_kills": 22.3, "adr": 81.0,
+        "rating": 1.26, "kast_pct": 72.8,
+        "source": "HLTV 2024 (hardcoded fallback)",
     },
 }
 
@@ -64,6 +92,8 @@ class Orchestrator:
         self.analysis_agent = AnalysisAgent()
         self.comparison_agent = ComparisonAgent()
         self.coach_agent = CoachAgent()
+        # WebScoutAgent สำหรับดึง pro stats แบบ live — lazy init เพื่อประหยัด resources
+        self._web_scout: WebScoutAgent | None = None
 
     def run(
         self,
@@ -212,16 +242,64 @@ class Orchestrator:
 
     def _fetch_pro_stats(self, pro_nickname: str) -> tuple[dict, str]:
         """
-        ดึง stats ของ pro player
-        1. ลองดึงจาก FACEIT API ก่อน (ถ้ามี key)
-        2. Fallback → hardcoded KNOWN_PROS
-        3. Fallback → ค่า pro benchmark เฉลี่ย
+        ดึง stats ของ pro player ด้วย 3-tier fallback chain:
+        1. WebScoutAgent — ดึงข้อมูล live จาก HLTV/FACEIT/csstats
+        2. FACEIT Official API — ถ้ามี FACEIT_API_KEY
+        3. KNOWN_PROS hardcoded — fallback สุดท้าย
+        4. Pro benchmark เฉลี่ย — ถ้าไม่เจอเลย
         """
         nick_lower = pro_nickname.lower()
 
-        # ── ลอง FACEIT API ก่อน ──
+        # ── Tier 1: WebScoutAgent (live web scraping) ────────────────────────
+        console.print(f"[cyan]🌐 กำลังค้นหา {pro_nickname} ผ่าน WebScoutAgent...[/cyan]")
+        try:
+            # ใช้ quick_scout (ไม่ผ่าน LLM) เพื่อความเร็ว
+            # สำหรับ verbose mode ใช้ self._get_web_scout().scout_player() แทน
+            scout_result = quick_scout(pro_nickname)
+            web_stats = scout_result.get("stats", {})
+
+            # ตรวจว่าได้ข้อมูลที่มีประโยชน์จริงๆ
+            if (web_stats.get("kd_ratio", 0) > 0 or
+                    web_stats.get("rating", 0) > 0 or
+                    web_stats.get("adr", 0) > 0):
+
+                sources_used = scout_result.get("sources_used", [])
+                source_str = ", ".join(sources_used) if sources_used else "web"
+
+                pro_stats = {
+                    "kd_ratio":      web_stats.get("kd_ratio", 1.0),
+                    "headshots_pct": web_stats.get("headshots_pct", 45.0),
+                    "win_rate":      web_stats.get("win_rate", 55.0),
+                    "avg_kills":     web_stats.get("avg_kills", 22.0),
+                    "adr":           web_stats.get("adr", 80.0),
+                    "source":        f"WebScout ({source_str})",
+                }
+                # เพิ่ม HLTV-specific stats ถ้ามี
+                for extra_key in ("rating", "kast_pct", "impact", "dpr", "elo", "level"):
+                    if web_stats.get(extra_key):
+                        pro_stats[extra_key] = web_stats[extra_key]
+
+                label_parts = [pro_nickname]
+                if web_stats.get("rating"):
+                    label_parts.append(f"Rating {web_stats['rating']:.2f}")
+                if web_stats.get("elo"):
+                    label_parts.append(f"ELO {web_stats['elo']}")
+                label = " | ".join(label_parts)
+
+                console.print(
+                    f"[green]✅ WebScout สำเร็จ! Sources: {source_str}[/green]"
+                )
+                return pro_stats, label
+
+            console.print(
+                f"[yellow]⚠️  WebScout ได้ข้อมูลไม่ครบ — ลอง FACEIT API[/yellow]"
+            )
+        except Exception as e:
+            console.print(f"[yellow]⚠️  WebScout error: {e} — ลอง FACEIT API[/yellow]")
+
+        # ── Tier 2: FACEIT Official API ──────────────────────────────────────
         if os.environ.get("FACEIT_API_KEY"):
-            console.print(f"[cyan]🔍 กำลังดึงข้อมูล {pro_nickname} จาก FACEIT...[/cyan]")
+            console.print(f"[cyan]🔍 กำลังดึงข้อมูล {pro_nickname} จาก FACEIT API...[/cyan]")
             player = faceit_tools.get_player_by_nickname(pro_nickname)
 
             if "error" not in player and player.get("player_id"):
@@ -233,25 +311,35 @@ class Orchestrator:
                         "win_rate":       float(stats.get("win_rate", 55.0)),
                         "avg_kills":      float(stats.get("avg_kills", 22.0)),
                         "adr":            85.0,   # FACEIT ไม่มี ADR ใช้ค่าเฉลี่ย pro
-                        "source": "FACEIT",
-                        "elo": player.get("elo", "N/A"),
-                        "level": player.get("level", "N/A"),
+                        "source":         "FACEIT API",
+                        "elo":            player.get("elo", "N/A"),
+                        "level":          player.get("level", "N/A"),
                     }
-                    label = f"{player.get('nickname', pro_nickname)} (FACEIT Lv.{player.get('level','?')})"
-                    console.print(f"[green]✅ ดึงข้อมูล {label} สำเร็จ[/green]")
+                    label = (
+                        f"{player.get('nickname', pro_nickname)} "
+                        f"(FACEIT Lv.{player.get('level', '?')})"
+                    )
+                    console.print(f"[green]✅ ดึงข้อมูล {label} จาก FACEIT API สำเร็จ[/green]")
                     return pro_stats, label
 
-        # ── Fallback: hardcoded pro stats ──
+        # ── Tier 3: hardcoded KNOWN_PROS ────────────────────────────────────
         if nick_lower in KNOWN_PROS:
             stats = KNOWN_PROS[nick_lower].copy()
-            label = f"{pro_nickname} ({stats.pop('source', 'HLTV')})"
-            console.print(f"[yellow]📊 ใช้ข้อมูล {label} (hardcoded)[/yellow]")
+            source_str = stats.pop("source", "HLTV 2024 hardcoded")
+            label = f"{pro_nickname} ({source_str})"
+            console.print(f"[yellow]📊 ใช้ข้อมูล hardcoded สำหรับ {pro_nickname}[/yellow]")
             return stats, label
 
-        # ── Fallback: pro benchmark เฉลี่ย ──
+        # ── Tier 4: pro benchmark เฉลี่ย ────────────────────────────────────
         from tools.stats_tools import get_benchmark_stats
-        console.print(f"[yellow]⚠️  ไม่พบ '{pro_nickname}' — ใช้ค่าเฉลี่ย pro แทน[/yellow]")
+        console.print(f"[yellow]⚠️  ไม่พบ '{pro_nickname}' ในทุก source — ใช้ค่าเฉลี่ย pro แทน[/yellow]")
         return get_benchmark_stats("pro"), f"{pro_nickname} (Pro avg)"
+
+    def _get_web_scout(self) -> WebScoutAgent:
+        """Lazy init WebScoutAgent — สร้างครั้งเดียว แล้ว reuse"""
+        if self._web_scout is None:
+            self._web_scout = WebScoutAgent()
+        return self._web_scout
 
     def _print_pro_comparison_table(self, your_stats: dict,
                                      pro_stats: dict, pro_label: str):

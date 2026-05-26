@@ -9,7 +9,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-1.5-flash"
 
 
 class BaseAgent:

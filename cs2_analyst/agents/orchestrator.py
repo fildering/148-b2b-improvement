@@ -17,7 +17,7 @@ from agents.comparison_agent import ComparisonAgent
 from agents.coach_agent import CoachAgent
 
 console = Console()
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-1.5-flash"
 
 
 class Orchestrator:

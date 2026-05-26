@@ -42,7 +42,7 @@ if not exist ".env" (
     echo.
     echo ===== ต้องใส่ API Keys ก่อนใช้งาน =====
     echo เปิดไฟล์ .env แล้วแก้ไข:
-    echo   GEMINI_API_KEY=your_key_here   (ฟรี! จาก aistudio.google.com)
+    echo   GROQ_API_KEY=your_key_here     (ฟรี! จาก console.groq.com)
     echo   FACEIT_API_KEY=your_key_here   (ฟรี! จาก developers.faceit.com)
     echo =========================================
     notepad .env

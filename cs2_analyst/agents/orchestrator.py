@@ -5,7 +5,7 @@ Orchestrator Agent — ประสานงานระหว่าง agents �
 
 import json
 import os
-from google import genai
+from groq import Groq
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -17,7 +17,7 @@ from agents.comparison_agent import ComparisonAgent
 from agents.coach_agent import CoachAgent
 
 console = Console()
-MODEL = "gemini-1.5-flash"
+MODEL = "llama-3.3-70b-versatile"
 
 
 class Orchestrator:
@@ -27,7 +27,7 @@ class Orchestrator:
     """
 
     def __init__(self):
-        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         self.data_agent = DataAgent()
         self.analysis_agent = AnalysisAgent()
         self.comparison_agent = ComparisonAgent()
@@ -158,26 +158,30 @@ class Orchestrator:
 
     def _extract_stats_from_analysis(self, analysis_text: str) -> dict:
         """
-        ใช้ Gemini แปลง analysis text เป็น structured stats dict
+        ใช้ Groq แปลง analysis text เป็น structured stats dict
         """
-        from google.genai import types
-
-        response = self.client.models.generate_content(
+        response = self.client.chat.completions.create(
             model=MODEL,
-            contents=f"""
-จากข้อความวิเคราะห์ CS2 นี้ ดึงตัวเลขออกมาเป็น JSON:
+            temperature=0,
+            max_tokens=256,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "แปลงข้อความวิเคราะห์ CS2 เป็น JSON stats ตอบด้วย JSON เท่านั้น ไม่มี markdown ไม่มีคำอธิบาย",
+                },
+                {
+                    "role": "user",
+                    "content": f"""จากข้อความวิเคราะห์ CS2 นี้ ดึงตัวเลขออกมาเป็น JSON:
 {analysis_text}
 
 ต้องการ keys: kd_ratio, headshots_pct, win_rate, avg_kills, adr
 ถ้าไม่มีข้อมูลให้ใช้ค่า default ที่สมเหตุสมผล
-ตอบแค่ JSON เท่านั้น ไม่มีคำอธิบาย ไม่มี markdown code block
-""",
-            config=types.GenerateContentConfig(
-                system_instruction="แปลงข้อความวิเคราะห์ CS2 เป็น JSON stats ตอบด้วย JSON เท่านั้น ไม่มี markdown",
-            ),
+ตอบแค่ JSON เท่านั้น เช่น {{"kd_ratio": 1.1, "headshots_pct": 42.0, ...}}""",
+                },
+            ],
         )
 
-        text = response.text.strip() if response.text else ""
+        text = response.choices[0].message.content.strip()
 
         # Clean up JSON ถ้ามี markdown code block หลุดมา
         if "```" in text:
@@ -189,7 +193,6 @@ class Orchestrator:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Fallback stats ถ้า parse ไม่ได้
             return {
                 "kd_ratio": 1.0,
                 "headshots_pct": 40.0,

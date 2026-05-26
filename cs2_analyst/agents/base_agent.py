@@ -1,15 +1,14 @@
 """
 Base Agent — โครงสร้างพื้นฐานของทุก agent
-ใช้ Google Gemini API (ฟรี!) แทน Anthropic
+ใช้ Groq API (ฟรี 14,400 req/วัน, เร็วมาก!)
 """
 
 import json
 import os
 from typing import Any
-from google import genai
-from google.genai import types
+from groq import Groq
 
-MODEL = "gemini-1.5-flash"
+MODEL = "llama-3.3-70b-versatile"
 
 
 class BaseAgent:
@@ -17,116 +16,84 @@ class BaseAgent:
         self.name = name
         self.system_prompt = system_prompt
         self.tools = tools
-        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.conversation: list = []
+        self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        self.messages: list[dict] = []
 
     def run(self, user_message: str, tool_executor: "ToolExecutor | None" = None) -> str:
         """
         รัน agent ด้วย agentic loop
-        วนซ้ำจนกว่า Gemini จะหยุดเรียก tools
+        วนซ้ำจนกว่า Groq จะหยุดเรียก tools
         """
-        self.conversation.append(
-            types.Content(role="user", parts=[types.Part(text=user_message)])
-        )
+        # เริ่ม conversation ด้วย system prompt
+        if not self.messages:
+            self.messages.append({"role": "system", "content": self.system_prompt})
 
-        # แปลง tool schema จาก Anthropic format → Gemini format
-        gemini_tools = self._convert_tools()
+        self.messages.append({"role": "user", "content": user_message})
 
-        config = types.GenerateContentConfig(
-            system_instruction=self.system_prompt,
-            tools=gemini_tools,
-        )
+        # แปลง tool schema เป็น Groq/OpenAI format
+        groq_tools = self._convert_tools() if self.tools else None
 
         while True:
-            response = self.client.models.generate_content(
-                model=MODEL,
-                contents=self.conversation,
-                config=config,
-            )
+            kwargs = {
+                "model": MODEL,
+                "messages": self.messages,
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            }
+            if groq_tools:
+                kwargs["tools"] = groq_tools
+                kwargs["tool_choice"] = "auto"
 
-            candidate = response.candidates[0]
-            content = candidate.content
-            self.conversation.append(content)
+            response = self.client.chat.completions.create(**kwargs)
+            message = response.choices[0].message
 
-            # หา function calls
-            function_calls = [
-                p for p in content.parts
-                if p.function_call is not None
-            ]
+            # เพิ่ม response ลง history
+            self.messages.append(message.model_dump())
 
-            # ไม่มี function calls → จบแล้ว ส่งข้อความกลับ
-            if not function_calls:
-                text_parts = [
-                    p.text for p in content.parts
-                    if hasattr(p, "text") and p.text
-                ]
-                return "\n".join(text_parts)
+            # ถ้าไม่มี tool calls → จบแล้ว
+            if not message.tool_calls:
+                return message.content or ""
 
-            # รัน function calls แล้วส่งผลกลับ
-            function_responses = []
-            for part in function_calls:
-                fc = part.function_call
+            # รัน tool calls แล้วส่งผลกลับ
+            for tool_call in message.tool_calls:
+                fn_name = tool_call.function.name
+                fn_args = json.loads(tool_call.function.arguments)
+
                 result = {}
                 if tool_executor:
-                    result = tool_executor.execute(fc.name, dict(fc.args))
+                    result = tool_executor.execute(fn_name, fn_args)
 
-                function_responses.append(
-                    types.Part(
-                        function_response=types.FunctionResponse(
-                            name=fc.name,
-                            response={"result": json.dumps(result, ensure_ascii=False)},
-                        )
-                    )
-                )
-
-            # เพิ่ม function results ลง conversation
-            self.conversation.append(
-                types.Content(role="user", parts=function_responses)
-            )
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
 
     def reset(self):
         """เคลียร์ประวัติ conversation"""
-        self.conversation = []
+        self.messages = []
 
-    def _convert_tools(self) -> list | None:
+    def _convert_tools(self) -> list[dict]:
         """
-        แปลง Anthropic tool format → Gemini FunctionDeclaration format
-        Anthropic: input_schema → Gemini: parameters
+        แปลง tool schema จาก Anthropic format → Groq/OpenAI format
+        Anthropic: input_schema → Groq: function.parameters
         """
-        if not self.tools:
-            return None
-
-        declarations = []
+        result = []
         for tool in self.tools:
             schema = tool.get("input_schema", {})
-            params = {
-                "type": schema.get("type", "object"),
-                "properties": {},
-            }
-
-            # แปลง properties
-            for prop_name, prop_def in schema.get("properties", {}).items():
-                converted = {"type": prop_def.get("type", "string")}
-                if "description" in prop_def:
-                    converted["description"] = prop_def["description"]
-                if "enum" in prop_def:
-                    converted["enum"] = prop_def["enum"]
-                if "default" in prop_def:
-                    converted["default"] = prop_def["default"]
-                params["properties"][prop_name] = converted
-
-            if "required" in schema:
-                params["required"] = schema["required"]
-
-            declarations.append(
-                types.FunctionDeclaration(
-                    name=tool["name"],
-                    description=tool.get("description", ""),
-                    parameters=params,
-                )
-            )
-
-        return [types.Tool(function_declarations=declarations)]
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": {
+                        "type": schema.get("type", "object"),
+                        "properties": schema.get("properties", {}),
+                        "required": schema.get("required", []),
+                    },
+                },
+            })
+        return result
 
 
 class ToolExecutor:

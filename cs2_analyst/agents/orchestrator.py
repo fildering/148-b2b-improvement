@@ -102,11 +102,12 @@ class Orchestrator:
         ))
 
         # ── Stage 1: Data Collection ──────────────────────────────────────
-        with Progress(SpinnerColumn(), TextColumn("[bold blue]{task.description}"),
-                      console=console, transient=True) as progress:
-            task = progress.add_task("📡 Stage 1: กำลังดึงข้อมูล...", total=None)
-            data_result = self.data_agent.collect(nickname=nickname, demo_path=demo_path)
-            progress.update(task, description="✅ ดึงข้อมูลสำเร็จ")
+        # ดึง real stats จาก FACEIT โดยตรง (ไม่ผ่าน LLM เพื่อความแม่นยำ)
+        real_stats = self._fetch_real_stats(nickname) if nickname else {}
+
+        console.print("[bold blue]📡 Stage 1: กำลังดึงข้อมูล...[/bold blue]")
+        data_result = self.data_agent.collect(nickname=nickname, demo_path=demo_path)
+        console.print("[bold blue]✅ ดึงข้อมูลสำเร็จ[/bold blue]")
 
         console.print(Panel(Markdown(data_result),
                             title="[bold blue]📡 Data Collection[/bold blue]",
@@ -130,7 +131,8 @@ class Orchestrator:
                       console=console, transient=True) as progress:
             task = progress.add_task("📊 Stage 3: กำลังเปรียบเทียบ...", total=None)
 
-            your_stats = self._extract_stats_from_analysis(analysis_result)
+            # ใช้ real_stats จาก FACEIT ถ้ามี ไม่งั้นค่อย extract จาก analysis text
+            your_stats = real_stats if real_stats else self._extract_stats_from_analysis(analysis_result)
 
             comparison_result = self.comparison_agent.compare(
                 your_stats=your_stats,
@@ -174,6 +176,39 @@ class Orchestrator:
         return results
 
     # ── Helpers ──────────────────────────────────────────────────────────
+
+    def _fetch_real_stats(self, nickname: str) -> dict:
+        """
+        ดึง stats จริงจาก FACEIT API โดยตรง (ไม่ผ่าน LLM)
+        ป้องกัน hallucination ของตัวเลข
+        """
+        if not os.environ.get("FACEIT_API_KEY"):
+            return {}
+        try:
+            player = faceit_tools.get_player_by_nickname(nickname)
+            if "error" in player or not player.get("player_id"):
+                return {}
+            stats = faceit_tools.get_player_stats(player["player_id"])
+            if "error" in stats:
+                return {}
+
+            def _f(val, default=0.0):
+                try: return float(val)
+                except: return default
+
+            return {
+                "kd_ratio":      _f(stats.get("kd_ratio", 0)),
+                "headshots_pct": _f(stats.get("headshots_pct", 0)),
+                "win_rate":      _f(stats.get("win_rate", 0)),
+                "avg_kills":     _f(stats.get("avg_kills", 0)),
+                "adr":           80.0,   # FACEIT ไม่มี ADR ใช้ค่าประมาณ
+                "_source": "FACEIT_API",
+                "_nickname": player.get("nickname", nickname),
+                "_elo": player.get("elo", 0),
+                "_level": player.get("level", 0),
+            }
+        except Exception:
+            return {}
 
     def _fetch_pro_stats(self, pro_nickname: str) -> tuple[dict, str]:
         """

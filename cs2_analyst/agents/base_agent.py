@@ -1,6 +1,6 @@
 """
 Base Agent — โครงสร้างพื้นฐานของทุก agent
-ใช้ Groq API (ฟรี 14,400 req/วัน, เร็วมาก!)
+ใช้ Groq API (ฟรี 14,400 req/วัน)
 """
 
 import json
@@ -9,6 +9,7 @@ from typing import Any
 from groq import Groq
 
 MODEL = "llama-3.3-70b-versatile"
+MAX_ITERATIONS = 8   # ป้องกัน infinite loop
 
 
 class BaseAgent:
@@ -20,21 +21,17 @@ class BaseAgent:
         self.messages: list[dict] = []
 
     def run(self, user_message: str, tool_executor: "ToolExecutor | None" = None) -> str:
-        """
-        รัน agent ด้วย agentic loop
-        วนซ้ำจนกว่า Groq จะหยุดเรียก tools
-        """
-        # เริ่ม conversation ด้วย system prompt
         if not self.messages:
             self.messages.append({"role": "system", "content": self.system_prompt})
 
         self.messages.append({"role": "user", "content": user_message})
 
-        # แปลง tool schema เป็น Groq/OpenAI format
         groq_tools = self._convert_tools() if self.tools else None
+        iterations = 0
 
-        while True:
-            kwargs = {
+        while iterations < MAX_ITERATIONS:
+            iterations += 1
+            kwargs: dict = {
                 "model": MODEL,
                 "messages": self.messages,
                 "temperature": 0.3,
@@ -47,51 +44,45 @@ class BaseAgent:
             response = self.client.chat.completions.create(**kwargs)
             message = response.choices[0].message
 
-            # เพิ่ม response ลง history — เฉพาะ fields ที่ Groq รับเท่านั้น
-            # (model_dump() ส่ง 'annotations' มาด้วยซึ่ง Groq ไม่รับ)
+            # เก็บ response ด้วย fields ที่ Groq รับเท่านั้น
             msg_dict: dict = {"role": message.role, "content": message.content or ""}
             if message.tool_calls:
                 msg_dict["tool_calls"] = [
                     {
                         "id": tc.id,
                         "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
+                        "function": {"name": tc.function.name,
+                                     "arguments": tc.function.arguments},
                     }
                     for tc in message.tool_calls
                 ]
             self.messages.append(msg_dict)
 
-            # ถ้าไม่มี tool calls → จบแล้ว
             if not message.tool_calls:
                 return message.content or ""
 
-            # รัน tool calls แล้วส่งผลกลับ
+            # รัน tool calls
             for tool_call in message.tool_calls:
                 fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments)
+                try:
+                    fn_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    fn_args = {}
 
-                result = {}
-                if tool_executor:
-                    result = tool_executor.execute(fn_name, fn_args)
+                result = tool_executor.execute(fn_name, fn_args) if tool_executor else {}
 
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": json.dumps(result, ensure_ascii=False, default=str),
                 })
 
+        return "หมด iteration — กรุณาลองใหม่"
+
     def reset(self):
-        """เคลียร์ประวัติ conversation"""
         self.messages = []
 
     def _convert_tools(self) -> list[dict]:
-        """
-        แปลง tool schema จาก Anthropic format → Groq/OpenAI format
-        Anthropic: input_schema → Groq: function.parameters
-        """
         result = []
         for tool in self.tools:
             schema = tool.get("input_schema", {})
@@ -111,8 +102,6 @@ class BaseAgent:
 
 
 class ToolExecutor:
-    """Registry สำหรับ tools ที่ agents จะเรียกใช้"""
-
     def __init__(self):
         self._registry: dict[str, callable] = {}
 

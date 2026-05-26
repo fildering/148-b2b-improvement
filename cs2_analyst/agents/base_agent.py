@@ -47,8 +47,22 @@ class BaseAgent:
             response = self.client.chat.completions.create(**kwargs)
             message = response.choices[0].message
 
-            # เพิ่ม response ลง history
-            self.messages.append(message.model_dump())
+            # เพิ่ม response ลง history — เฉพาะ fields ที่ Groq รับเท่านั้น
+            # (model_dump() ส่ง 'annotations' มาด้วยซึ่ง Groq ไม่รับ)
+            msg_dict: dict = {"role": message.role, "content": message.content or ""}
+            if message.tool_calls:
+                msg_dict["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in message.tool_calls
+                ]
+            self.messages.append(msg_dict)
 
             # ถ้าไม่มี tool calls → จบแล้ว
             if not message.tool_calls:

@@ -19,7 +19,7 @@ from agents.coach_agent import CoachAgent
 from tools import faceit_tools
 
 console = Console()
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "llama-3.1-8b-instant"   # 500k tokens/day vs 70b's 100k
 
 # ── Pro player stats แบบ hardcoded (fallback ถ้าไม่มี FACEIT key) ──
 # ข้อมูลจาก HLTV lifetime stats ปี 2024

@@ -8,7 +8,7 @@ import os
 from typing import Any
 from groq import Groq
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "llama-3.1-8b-instant"   # 500k tokens/day vs 70b's 100k
 MAX_ITERATIONS = 8   # ป้องกัน infinite loop
 
 

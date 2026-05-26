@@ -47,8 +47,15 @@ async function appendRowsToSheet(rows) {
 // -------------------- Puppeteer --------------------
 async function launchBrowser() {
   return puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-notifications"],
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",   // สำคัญมากบน VM/Docker
+      "--disable-gpu",              // ไม่มี GPU บน server
+      "--disable-notifications",
+      "--disable-extensions",
+    ],
   });
 }
 
